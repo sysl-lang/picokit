@@ -96,10 +96,16 @@ under the kit is a fact about somebody's desk.
   binding. A 320x480 ARGB32 frame is 614 KB against this chip's 264 KB, so banding is not an
   optimization here — it is the only way it fits.
 
-  What has to be settled first is whether plutovg can be reached from a freestanding target at all.
-  It declares `requires { posix = true }`, which its README says is `write_png` and `font` and
-  nothing else — but a capability is a property of the module rather than of the call, and this
-  program has no operating system to satisfy it with.
+  **Its `requires { posix = true }` is not the obstacle it looks like.** Exactly two bound names in
+  that package reach a file system — `Surface.write_png`, which is stb_image_write and `fopen`s, and
+  the `font_face_load_from_file` extern — and a capability is a property of the module rather than of
+  the call, so the whole package declares what those two need. Nothing on the drawing path touches
+  an operating system.
+
+  Probed rather than assumed: a program depending on plutovg and built with
+  `sysl build-c --target thumbv6m-freestanding` gets past analysis, which is where a capability
+  refusal would land, and stops in plutovg's C for want of the toolchain's own headers — the thing
+  this project's CMake already supplies.
 - **Touch**, over I2C0. The controller is not named in 52Pi's documentation.
 - **The joystick**, which is the ADC and two pins.
 - **The RGB LED**, which is one pin and a bit-banged or PIO waveform rather than a level.
