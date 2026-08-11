@@ -31,10 +31,10 @@ dependencies {
 //
 // `sh.sysl.plutovg` is not a dependency yet and it will be: it is the rasterizer that turns this
 // from a panel that can be filled into a panel that can be drawn on, and the two packages were built
-// to pair — plutovg renders an ARGB32 band, st7796 converts it to RGB565 as it pushes. What has to
-// be settled first is that plutovg's `requires { posix = true }` can be satisfied on a freestanding
-// target at all: that capability is `write_png` and `font` and nothing else, but a capability is a
-// property of the module rather than of the call.
+// to pair — plutovg renders an ARGB32 band, st7796 converts it to RGB565 as it pushes. Its
+// `requires { posix = true }` turned out not to be the obstacle it looks like — that clause is
+// `write_png` and the font loader, and a program depending on plutovg gets past analysis for
+// `thumbv6m-freestanding`, which is where a capability refusal would land.
 requires {
   alloc = true
 }

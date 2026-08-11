@@ -13,7 +13,10 @@
 import sh.sysl.pico.*
 import sh.sysl.rp2040.io_bank0 as io
 import sh.sysl.rp2040.pads_bank0 as pads
+import sh.sysl.rp2040.resets as resets
 import sh.sysl.rp2040.sio as sio
+import sh.sysl.rp2040.spi0 as ssp
+import sh.sysl.st7796.{Rotation, clear, fill_rect, init as panel_init, panel, rgb565}
 import sysl.time.DurationUnits
 
 // ## The board
@@ -100,6 +103,145 @@ read(pin: u32) -> bool = (*reg(sio.BASE + sio.GPIO_IN_OFFSET) >> pin) & 1u32 == 
 // Held down, given the pull-up above.
 pressed(pin: u32) -> bool = !read(pin)
 
+// ## SPI0, for the panel
+//
+// **The RP2040's SPI is an Arm PL022**, so its registers are the PL022's and carry that block's `SSP`
+// names rather than anything Raspberry Pi invented. The datasheet's SPI chapter is mostly a pointer
+// at Arm's.
+//
+// **A peripheral comes out of the chip's reset before it is configured**, which is the step that has
+// no equivalent on a smaller microcontroller and the one most easily left out: every register below
+// reads and writes fine while the block is held in reset, and none of it does anything.
+//
+// The clock the divisors below are against is `clk_peri`, which the SDK's own startup has already
+// brought up at the system clock — 125 MHz. Nothing here configures it, and nothing here should:
+// clocks are the board's business and the SDK owns that.
+
+// **Every peripheral register has three more addresses above it — XOR, set and clear.** Writing a
+// mask to the set alias raises exactly those bits and touches nothing else, which is not a
+// convenience: a read-modify-write of a shared register races the other core, and `RESETS` is shared
+// by definition.
+const ATOMIC_SET: u32 = 0x2000
+const ATOMIC_CLR: u32 = 0x3000
+
+// The transmit FIFO and the status word, which the pushing loop below reads on every byte.
+private sspdr() -> *volatile u32 = reg(ssp.BASE + ssp.SSPDR_OFFSET)
+private sspsr() -> *volatile u32 = reg(ssp.BASE + ssp.SSPSR_OFFSET)
+
+// Bring SPI0 up at 31.25 MHz, eight bits a frame, mode 0.
+//
+// **The bit rate is `clk_peri / (CPSDVSR * (1 + SCR))`**, so 125 MHz over 2 × 2. The ST7796 is good
+// for rather more than this and the panel's ribbon is not — 31.25 MHz is the fast end of what these
+// carrier boards are reliably wired for, and a display that comes up speckled rather than blank is
+// this number being too high.
+//
+// **Mode 0 is `SPO = 0, SPH = 0`**: the clock idles low and the panel samples on the rising edge.
+// `DSS = 7` is eight bits, counted from zero, and `FRF = 0` is Motorola SPI rather than the two
+// other framings the PL022 can speak.
+spi_up()
+    // A full reset cycle rather than only the release, so that this is the same whether or not
+    // something earlier in the boot had the block.
+    *reg(resets.BASE + ATOMIC_SET + resets.RESET_OFFSET) = resets.RESET_SPI0_MASK
+    *reg(resets.BASE + ATOMIC_CLR + resets.RESET_OFFSET) = resets.RESET_SPI0_MASK
+
+    while *reg(resets.BASE + resets.RESET_DONE_OFFSET) & resets.RESET_DONE_SPI0_MASK == 0 do ()
+
+    // Configured while disabled, which the PL022 requires: `SSE` is set last and on its own.
+    *reg(ssp.BASE + ssp.SSPCR1_OFFSET) = 0
+    *reg(ssp.BASE + ssp.SSPCPSR_OFFSET) = 2
+    *reg(ssp.BASE + ssp.SSPCR0_OFFSET) = (1u32 << ssp.SSPCR0_SCR_SHIFT) | 7
+    *reg(ssp.BASE + ssp.SSPCR1_OFFSET) = ssp.SSPCR1_SSE_MASK
+
+    // The two pins the peripheral drives. Function 1 on both, which is what `FUNCSEL_SPI0_SCLK` and
+    // `FUNCSEL_SPI0_TX` say — the constants are named rather than numbered so that this line can be
+    // read against the pinout table instead of against the datasheet.
+    *ctrl(TFT_CLK) = io.GPIO2_CTRL_FUNCSEL_SPI0_SCLK
+    *ctrl(TFT_DIN) = io.GPIO3_CTRL_FUNCSEL_SPI0_TX
+    *pad(TFT_CLK) = *pad(TFT_CLK) & ~pads.GPIO0_OD_MASK
+    *pad(TFT_DIN) = *pad(TFT_DIN) & ~pads.GPIO0_OD_MASK
+end spi_up
+
+// Push bytes, discarding everything that comes back.
+//
+// **The reads are not optional even though nothing is listening.** Every frame clocked out clocks one
+// in, and a receive FIFO nobody empties overflows — after which the block reports an overrun and, on
+// this peripheral, keeps running while the status bits stop meaning what the loop below reads them
+// to mean. So the loop is balanced: it pushes while there is room and pops while there is anything
+// there, and finishes when as many frames have come back as went out.
+private spi_send(data: []u8)
+    var tx: usize = 0
+    var rx: usize = 0
+    var sink: u32 = 0
+
+    while rx < data.len
+        if tx < data.len && *sspsr() & ssp.SSPSR_TNF_MASK != 0
+            *sspdr() = u32(data[tx])
+            tx += 1
+
+        if *sspsr() & ssp.SSPSR_RNE_MASK != 0
+            sink = *sspdr()
+            rx += 1
+end spi_send
+
+// Wait until the last bit is off the wire.
+//
+// **This is what makes `DC` safe to move.** The FIFO being empty says the block has accepted every
+// byte, not that it has sent them, and lowering `DC` one byte early turns a parameter into a command
+// — which the panel obeys. `BSY` is the bit that answers the question actually being asked.
+private spi_drain() =
+    while *sspsr() & ssp.SSPSR_BSY_MASK != 0 do ()
+
+// ## The panel's three callbacks
+//
+// **These are `*extern` rather than closures, so they capture nothing** — which is why everything
+// above is addresses and constants rather than a struct somebody has to be handed. `sh.sysl.st7796`
+// takes plain function pointers on purpose: a `&Fn` is a trait object, and the compiler cannot know
+// whether one holds on to the slice it was given, so every parameter array in the driver would be
+// promoted to the heap to outlive its frame. On a board with 264 KB that is the wrong trade, and the
+// price is this — one display, reached through the module.
+
+// A command byte with `DC` low, then its parameters with `DC` high, inside one assertion of `CS`.
+send_cmd(c: u8, params: *u8, n: usize)
+    low(TFT_CS)
+
+    low(TFT_DC)
+    var one: [1]u8 = [0]
+    one[0] = c
+    spi_send(one[..])
+    spi_drain()
+
+    if n > 0
+        high(TFT_DC)
+        spi_send(params[0..<n])
+        spi_drain()
+
+    high(TFT_CS)
+end send_cmd
+
+// Pixels are always data, and always follow a window the driver has already set.
+send_pixels(data: *u8, n: usize)
+    if n == 0 then return
+
+    low(TFT_CS)
+    high(TFT_DC)
+    spi_send(data[0..<n])
+    spi_drain()
+    high(TFT_CS)
+end send_pixels
+
+delay_ms(ms: u32) = sleep(int(ms).ms)
+
+// Hold the panel in reset and let it go, which is the one part of bringing it up that the driver
+// cannot do — `SWRESET` is a command, and a command needs a controller already listening.
+panel_reset()
+    high(TFT_RST)
+    delay_ms(10)
+    low(TFT_RST)
+    delay_ms(20)
+    high(TFT_RST)
+    delay_ms(120)
+end panel_reset
+
 // ## The program
 //
 // Alternate the two LEDs and report the buttons, so that a board with this on it is visibly running
@@ -123,6 +265,32 @@ boot() -> int =
     output(LED_D2)
     input_pullup(BTN_1)
     input_pullup(BTN_2)
+
+    // **`CS`, `DC` and `RST` are ordinary GPIOs and not the SPI block's.** The PL022 has a chip-select
+    // of its own and it is useless here: it drops between frames, and this panel needs one assertion
+    // held across a command and all of its parameters.
+    output(TFT_CS)
+    output(TFT_DC)
+    output(TFT_RST)
+    high(TFT_CS)
+
+    spi_up()
+    panel_reset()
+
+    var display = panel(&send_cmd, &send_pixels, &delay_ms, Rotation.Landscape)
+    panel_init(&display)
+    print(s"panel up — ${display.width} by ${display.height}")
+
+    clear(&display, rgb565(0, 0, 0))
+
+    // Three bars and a white square: enough that a wrong colour order, a wrong rotation and a wrong
+    // window all look like different mistakes rather than like each other.
+    val third = display.width / 3
+
+    fill_rect(&display, 0, 0, third, 60, rgb565(255, 0, 0))
+    fill_rect(&display, third, 0, third, 60, rgb565(0, 255, 0))
+    fill_rect(&display, third * 2, 0, third, 60, rgb565(0, 0, 255))
+    fill_rect(&display, 20, 100, 80, 80, rgb565(255, 255, 255))
 
     var last_1 = false
     var last_2 = false
