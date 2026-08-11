@@ -1,0 +1,147 @@
+// The Pico Breadboard Kit, in sysl — the board's own parts, driven from the RP2040's registers.
+//
+// **This is board glue and it is meant to be.** `sh.sysl.st7796` is a display driver that runs on
+// any chip, `sh.sysl.rp2040` is a chip's register map that knows about no board, and `sh.sysl.pico`
+// is the SDK's surface. None of them knows that this particular carrier board puts an LED on GPIO 16
+// — that fact has to live somewhere, and here is where it lives.
+//
+// **Everything below the SDK line is registers rather than `hardware/gpio.h`.** `sh.sysl.pico` binds
+// the parts of the SDK that have no register equivalent — USB stdio, the clock, the wireless chip —
+// and the GPIOs are not among them. A pin is three writes, they are the writes the datasheet
+// describes, and going through `rp2040` keeps them readable against it.
+
+import sh.sysl.pico.*
+import sh.sysl.rp2040.io_bank0 as io
+import sh.sysl.rp2040.pads_bank0 as pads
+import sh.sysl.rp2040.sio as sio
+import sysl.time.DurationUnits
+
+// ## The board
+//
+// From 52Pi's own documentation for EP-0172, which GeeekPi sells as the same board under its own
+// name. **The panel's five pins are here for completeness and nothing drives them yet** — the SPI
+// bring-up is the next piece of work, and `README.md` says what it is waiting on.
+
+const LED_D1: u32   = 16   // the two user LEDs; D3 and D4 are wired to 3V3 and 5V and are not pins
+const LED_D2: u32   = 17
+const BTN_1: u32    = 15   // the two buttons
+const BTN_2: u32    = 14
+const BUZZER: u32   = 13
+const RGB: u32      = 12   // one pin for a colour, so this is an addressable LED rather than three
+
+const TFT_CLK: u32  = 2    // the 3.5" 320x480 panel, an ST7796 over SPI0
+const TFT_DIN: u32  = 3
+const TFT_CS: u32   = 5
+const TFT_DC: u32   = 6
+const TFT_RST: u32  = 7
+
+const TOUCH_SDA: u32 = 8   // the capacitive touch controller, over I2C0
+const TOUCH_SCL: u32 = 9
+
+// The joystick's two axes are ADC0 and ADC1, which are GPIO 26 and 27. They are named as ADC channels
+// rather than as pins because that is the half of the pin this board uses.
+const JOY_X_CHANNEL: u32 = 0
+const JOY_Y_CHANNEL: u32 = 1
+
+// ## Reaching a register
+//
+// **A register is a `*volatile u32`, and the qualifier is the whole point.** A pin's level is
+// something the hardware changes without this program changing it, and reading one is an effect
+// rather than a value computation — so the compiler is told to emit exactly the accesses written
+// here, exactly once each, in the order written. Without the word, a loop polling a button is a loop
+// reading the value it saw first, forever.
+reg(addr: u32) -> *volatile u32 = ptr_cast(usize(addr))
+
+// A pin's entry in the pad control block — drive strength, pull-ups, input enable. One word per pin,
+// four bytes apart, the first at `GPIO0_OFFSET`.
+pad(pin: u32) -> *volatile u32 = reg(pads.BASE + pads.GPIO0_OFFSET + pin * 4)
+
+// A pin's function-select register. **Eight bytes apart rather than four**, because each pin has a
+// status word in front of its control word.
+ctrl(pin: u32) -> *volatile u32 = reg(io.BASE + io.GPIO0_CTRL_OFFSET + pin * 8)
+
+// ## Pins
+//
+// Hand a pin to the single-cycle IO block, which is what makes it a GPIO the processor drives rather
+// than a signal belonging to a peripheral. Function 5 on every pin of this chip.
+claim(pin: u32) = *ctrl(pin) = io.GPIO0_CTRL_FUNCSEL_SIO_0
+
+// An output: claimed, its pad driving rather than isolated, and its direction set.
+//
+// **`OD` is "output disable", so clearing it is what enables the driver** — the sense reads backwards
+// and is the datasheet's. `IE` is left alone: an output does not need its input buffer, and the SDK's
+// own startup has already put the pad in a known state.
+output(pin: u32) =
+    claim(pin)
+    *pad(pin) = *pad(pin) & ~pads.GPIO0_OD_MASK
+    *reg(sio.BASE + sio.GPIO_OE_SET_OFFSET) = 1u32 << pin
+
+// An input with the chip's own pull-up, which is what a button to ground needs.
+//
+// **Whether these buttons are to ground is an assumption, and it is the one thing here that wants
+// checking against the board before it is believed.** 52Pi's documentation gives the pin numbers and
+// not the wiring. If they turn out to be to 3V3, this is `PDE` instead and `pressed` loses its `!`.
+input_pullup(pin: u32) =
+    claim(pin)
+    *pad(pin) = (*pad(pin) | pads.GPIO0_IE_MASK | pads.GPIO0_PUE_MASK) & ~pads.GPIO0_PDE_MASK
+    *reg(sio.BASE + sio.GPIO_OE_CLR_OFFSET) = 1u32 << pin
+
+// **Set and clear are separate registers rather than a read-modify-write of one**, which is not a
+// convenience: two cores share this block, and a read-modify-write of `GPIO_OUT` from one of them
+// would drop a change the other made in between.
+high(pin: u32) = *reg(sio.BASE + sio.GPIO_OUT_SET_OFFSET) = 1u32 << pin
+low(pin: u32)  = *reg(sio.BASE + sio.GPIO_OUT_CLR_OFFSET) = 1u32 << pin
+
+write(pin: u32, on: bool) = if on then high(pin) else low(pin)
+
+read(pin: u32) -> bool = (*reg(sio.BASE + sio.GPIO_IN_OFFSET) >> pin) & 1u32 == 1
+
+// Held down, given the pull-up above.
+pressed(pin: u32) -> bool = !read(pin)
+
+// ## The program
+//
+// Alternate the two LEDs and report the buttons, so that a board with this on it is visibly running
+// and every part it touches has been proven separately: the LEDs prove the output path, the buttons
+// prove the input path and the pads, and the printing proves the USB serial port.
+
+@export("main")
+boot() -> int =
+    // **The answer is not fatal here, unlike in most programs that use this package.** `init` brings
+    // up stdio and then the wireless chip, and this board's own parts are on neither: a plain Pico
+    // has no CYW43 for the second half to find, and everything below still works on one.
+    val wireless = init()
+
+    wait_for_terminal()
+    print("the Pico Breadboard Kit, in sysl")
+
+    if !wireless
+        print("no wireless chip — a plain Pico, or the CMake project linked no cyw43 support")
+
+    output(LED_D1)
+    output(LED_D2)
+    input_pullup(BTN_1)
+    input_pullup(BTN_2)
+
+    var last_1 = false
+    var last_2 = false
+    var on = false
+
+    loop
+        on = !on
+        write(LED_D1, on)
+        write(LED_D2, !on)
+
+        val now_1 = pressed(BTN_1)
+        val now_2 = pressed(BTN_2)
+
+        if now_1 != last_1
+            print(if now_1 then "BTN1 down" else "BTN1 up")
+            last_1 = now_1
+
+        if now_2 != last_2
+            print(if now_2 then "BTN2 down" else "BTN2 up")
+            last_2 = now_2
+
+        sleep(50.ms)
+end boot

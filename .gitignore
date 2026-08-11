@@ -1,0 +1,6 @@
+# CMake's, and the SDK's copy of itself that it generates into it.
+build*/
+
+# The pico-sdk, when somebody clones it in here rather than pointing PICO_SDK_PATH elsewhere. It is
+# 81 MB and belongs to Raspberry Pi.
+pico-sdk/

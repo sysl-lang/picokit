@@ -1,0 +1,40 @@
+// The Pico Breadboard Kit — a program, not a package.
+//
+// Nothing imports this. It is the *board glue* for one carrier board: the pin map, the SPI and GPIO
+// bring-up, and a demo that shows the parts working. `sh.sysl.st7796`'s README says that glue
+// "belongs in the program, not here", so that the driver does not quietly become a package for one
+// board — and this is the program it means.
+
+package {
+  name    = "picokit"
+  version = "0.1.0"
+}
+
+// **`rp2040` is the chip and `pico` is the board's host.** They are not alternatives: the first is
+// generated register constants and no code at all, the second is the pico-sdk's surface reached
+// through `extern`. Everything this board hangs off its GPIOs — the two LEDs, the two buttons, the
+// buzzer, the RGB LED, the joystick on ADC0/ADC1, and the panel's SPI — is registers, which is
+// `rp2040`. Standard output over USB, the clock, and the wireless chip are the SDK's, which is
+// `pico`.
+//
+// `st7796` is the panel. It is not tied to this board or to any chip: it is arithmetic on bytes and
+// calls to two `*extern` callbacks that this program supplies, which is precisely the split that
+// keeps it a driver rather than a board file.
+dependencies {
+  rp2040 { git = "github.com/sysl-lang/rp2040", version = "0.1.0" }
+  pico   { git = "github.com/sysl-lang/pico",   version = "0.1.0" }
+  st7796 { git = "github.com/sysl-lang/st7796", version = "0.1.0" }
+}
+
+// **`alloc = true` because the SDK links newlib's allocator whether or not this program touches
+// one**, which is the reason `sh.sysl.pico` gives for the same line. Nothing here allocates yet.
+//
+// `sh.sysl.plutovg` is not a dependency yet and it will be: it is the rasterizer that turns this
+// from a panel that can be filled into a panel that can be drawn on, and the two packages were built
+// to pair — plutovg renders an ARGB32 band, st7796 converts it to RGB565 as it pushes. What has to
+// be settled first is that plutovg's `requires { posix = true }` can be satisfied on a freestanding
+// target at all: that capability is `write_png` and `font` and nothing else, but a capability is a
+// property of the module rather than of the call.
+requires {
+  alloc = true
+}
