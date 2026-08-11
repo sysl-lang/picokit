@@ -65,21 +65,33 @@ Alternates the two LEDs and reports the buttons over the USB serial port. That i
 it proves the output path, the input path and the pads separately, before anything harder rests on
 them.
 
+**Run on the board, 2026-08-10**, on a Pico W: the banner arrives over USB, D1 and D2 alternate, and
+both buttons report themselves independently.
+
+```
+the Pico Breadboard Kit, in sysl
+BTN1 down
+BTN1 up
+BTN2 down
+BTN2 up
+```
+
 The GPIO work is registers rather than `hardware/gpio.h` — `sh.sysl.pico` binds the parts of the SDK
 that have no register equivalent, and the pins are not among them. A pin is three writes, they are
 the writes the datasheet describes, and going through `sh.sysl.rp2040` keeps them readable against
 it.
 
-**One assumption in `main.sysl` wants checking against the board.** The buttons are configured with
-the chip's own pull-ups, on the reading that they switch to ground; 52Pi document the pin numbers and
-not the wiring. If they are to 3V3 instead, it is `PDE` rather than `PUE` and `pressed` loses its
-`!`.
+**The buttons switch to ground**, which the board in hand confirms and 52Pi do not document either
+way. So they get the chip's own pull-ups and `pressed` is `read` inverted. Had they gone to 3V3 it
+would be `PDE` rather than `PUE`, and the symptom would have been a button reporting itself held
+while nobody touched it.
 
 ## A plain Pico
 
 `sh.sysl.pico`'s `init` starts stdio and then the CYW43, and its `led` is a wireless-chip GPIO
 because that is where a Pico W's LED is. So this program links `pico_cyw43_arch_none` and **wants a
-Pico W today**. A plain Pico does not fail at CMake — it fails at the link, on `cyw43_arch_init`.
+Pico W today**, which is what it has been run on. A plain Pico does not fail at CMake — it fails at
+the link, on `cyw43_arch_init`.
 
 Nothing the *kit* does needs any of it: every part above is an RP2040 pin. The change is to reach
 `sh.sysl.pico.externs` for `stdio_init_all` directly and never call `init`, which costs the package's

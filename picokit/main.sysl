@@ -78,9 +78,10 @@ output(pin: u32) =
 
 // An input with the chip's own pull-up, which is what a button to ground needs.
 //
-// **Whether these buttons are to ground is an assumption, and it is the one thing here that wants
-// checking against the board before it is believed.** 52Pi's documentation gives the pin numbers and
-// not the wiring. If they turn out to be to 3V3, this is `PDE` instead and `pressed` loses its `!`.
+// **This board's buttons are to ground**, which is the board rather than the datasheet talking: 52Pi
+// give the pin numbers and not the wiring, and what settled it was pressing them. Wired to 3V3 they
+// would want `PDE` here and `pressed` without its `!`, and would have announced themselves by
+// reporting a button held that nobody was touching.
 input_pullup(pin: u32) =
     claim(pin)
     *pad(pin) = (*pad(pin) | pads.GPIO0_IE_MASK | pads.GPIO0_PUE_MASK) & ~pads.GPIO0_PDE_MASK
