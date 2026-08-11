@@ -16,7 +16,7 @@ import sh.sysl.rp2040.pads_bank0 as pads
 import sh.sysl.rp2040.resets as resets
 import sh.sysl.rp2040.sio as sio
 import sh.sysl.rp2040.spi0 as ssp
-import sh.sysl.st7796.{Rotation, clear, fill_rect, init as panel_init, panel, rgb565}
+import sh.sysl.st7796.{Rotation, clear, fill_rect, init as panel_init, invert, panel, rgb565}
 import sysl.time.DurationUnits
 
 // ## The board
@@ -279,7 +279,21 @@ boot() -> int =
 
     var display = panel(&send_cmd, &send_pixels, &delay_ms, Rotation.Landscape)
     panel_init(&display)
+
+    // **This panel wants inversion on, and that is a fact about the module rather than about the
+    // controller.** The ST7796's init sequence sends neither `INVON` nor `INVOFF`, so the controller
+    // is left at its post-reset default — and this glass is wired the other way up, which is common
+    // on the IPS panels these carrier boards use. Without it every colour arrives as its complement:
+    // red reads cyan, green magenta, blue yellow, and a black background comes up white.
+    //
+    // **BTN1 toggles it**, so that the claim is settled by pressing a button rather than by a
+    // rebuild — which matters because the two builds print the same thing and differ only on the
+    // glass.
+    var inverted = true
+    invert(&display, inverted)
+
     print(s"panel up — ${display.width} by ${display.height}")
+    print("BTN1 toggles inversion — the bars should read red, green, blue on black")
 
     clear(&display, rgb565(0, 0, 0))
 
@@ -305,8 +319,12 @@ boot() -> int =
         val now_2 = pressed(BTN_2)
 
         if now_1 != last_1
-            print(if now_1 then "BTN1 down" else "BTN1 up")
             last_1 = now_1
+
+            if now_1
+                inverted = !inverted
+                invert(&display, inverted)
+                print(if inverted then "inversion on" else "inversion off")
 
         if now_2 != last_2
             print(if now_2 then "BTN2 down" else "BTN2 up")

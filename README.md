@@ -98,11 +98,32 @@ Nothing the *kit* does needs any of it: every part above is an RP2040 pin. The c
 pleasanter surface for the one call that is Pico-W-only. It is not made here because which board is
 under the kit is a fact about somebody's desk.
 
+## The panel
+
+**The RP2040's SPI is an Arm PL022**, so the registers carry that block's `SSP` names and the
+datasheet's SPI chapter is mostly a pointer at Arm's. Bring-up is a full reset cycle through the
+`RESETS` atomic aliases, then `CPSDVSR` and `SCR` for **31.25 MHz** off `clk_peri`'s 125, eight bits
+a frame, mode 0, with `SSE` set last and on its own because the PL022 wants configuring while
+disabled.
+
+**`CS`, `DC` and `RST` are ordinary GPIOs rather than the peripheral's.** The PL022 has a
+chip-select and it is useless here: it drops between frames, and this panel needs one assertion held
+across a command and every parameter that follows it.
+
+Two things in the pushing loop are load bearing and neither is obvious from the code:
+
+- **It reads back every byte it writes.** A frame clocked out clocks one in, and a receive FIFO
+  nobody empties overflows — after which the block keeps running while its status bits stop meaning
+  what the loop reads them to mean.
+- **It waits on `BSY`, not on the FIFO being empty, before moving `DC`.** An empty FIFO says the
+  block has *accepted* the bytes, not that it has *sent* them. Lowering `DC` one byte early turns a
+  parameter into a command, and the panel obeys it.
+
+The demo clears to black and paints three bars and a white square — chosen so that a wrong colour
+order, a wrong rotation and a wrong window look like different mistakes rather than like each other.
+
 ## What is not done yet
 
-- **The panel.** SPI0 bring-up, and the two `*extern` callbacks `st7796.panel` takes — one that
-  raises DC for a command, one that pushes pixels. The driver is written and tagged; what is missing
-  is this board's half.
 - **plutovg.** The two packages were built to pair: plutovg renders an ARGB32 band, st7796 converts
   it to RGB565 as it pushes, and the conversion lives in the driver so that plutovg stays a faithful
   binding. A 320x480 ARGB32 frame is 614 KB against this chip's 264 KB, so banding is not an
