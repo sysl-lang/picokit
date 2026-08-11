@@ -1,33 +1,31 @@
-// The Pico Breadboard Kit, in sysl — the board's own parts, driven from the RP2040's registers.
+// The Pico Breadboard Kit, in sysl — one carrier board's pin map, and nothing else.
 //
-// **This is board glue and it is meant to be.** `sh.sysl.st7796` is a display driver that runs on
-// any chip, `sh.sysl.rp2040` is a chip's register map that knows about no board, and `sh.sysl.pico`
-// is the SDK's surface. None of them knows that this particular carrier board puts an LED on GPIO 16
-// — that fact has to live somewhere, and here is where it lives.
+// **This is board glue and it is meant to be.** `sh.sysl.st7796` is a display driver that runs on any
+// chip, `sh.sysl.rp2040blocks` drives an RP2040 that knows about no board, and `sh.sysl.pico` is the
+// SDK's surface. None of them knows that this particular carrier board puts an LED on GPIO 16 — that
+// fact has to live somewhere, and here is where it lives.
 //
-// **Everything below the SDK line is registers rather than `hardware/gpio.h`.** `sh.sysl.pico` binds
-// the parts of the SDK that have no register equivalent — USB stdio, the clock, the wireless chip —
-// and the GPIOs are not among them. A pin is three writes, they are the writes the datasheet
-// describes, and going through `rp2040` keeps them readable against it.
+// **Everything that was general has left.** The SPI bring-up and the GPIO helpers were written here
+// and ran here first; they are now `sh.sysl.rp2040blocks`, because a PL022 reset cycle and a divisor
+// search are facts about the chip and would have been copied into the next board's program
+// unchanged. What stayed is the pin numbers, the three callbacks that name them, and the one thing
+// this glass wants that its controller does not.
 
 import sh.sysl.pico.*
-import sh.sysl.rp2040.io_bank0 as io
-import sh.sysl.rp2040.pads_bank0 as pads
-import sh.sysl.rp2040.resets as resets
-import sh.sysl.rp2040.sio as sio
-import sh.sysl.rp2040.spi0 as ssp
+import sh.sysl.rp2040blocks.gpio
+import sh.sysl.rp2040blocks.spi
 import sh.sysl.st7796.{Rotation, clear, fill_rect, init as panel_init, invert, panel, rgb565}
 import sysl.time.DurationUnits
 
 // ## The board
 //
-// From 52Pi's own documentation for EP-0172, which GeeekPi sells as the same board under its own
-// name. **The panel's five pins are here for completeness and nothing drives them yet** — the SPI
-// bring-up is the next piece of work, and `README.md` says what it is waiting on.
+// From 52Pi's own documentation for EP-0172, which GeeekPi sell as the same board under their own
+// name. **The touch controller, the joystick and the RGB LED are named here and not yet driven** —
+// `README.md` says what each of them still wants.
 
 const LED_D1: u32   = 16   // the two user LEDs; D3 and D4 are wired to 3V3 and 5V and are not pins
 const LED_D2: u32   = 17
-const BTN_1: u32    = 15   // the two buttons
+const BTN_1: u32    = 15   // the two buttons, which switch to ground
 const BTN_2: u32    = 14
 const BUZZER: u32   = 13
 const RGB: u32      = 12   // one pin for a colour, so this is an addressable LED rather than three
@@ -46,213 +44,96 @@ const TOUCH_SCL: u32 = 9
 const JOY_X_CHANNEL: u32 = 0
 const JOY_Y_CHANNEL: u32 = 1
 
-// ## Reaching a register
+// ## The bus
 //
-// **A register is a `*volatile u32`, and the qualifier is the whole point.** A pin's level is
-// something the hardware changes without this program changing it, and reading one is an effect
-// rather than a value computation — so the compiler is told to emit exactly the accesses written
-// here, exactly once each, in the order written. Without the word, a loop polling a button is a loop
-// reading the value it saw first, forever.
-reg(addr: u32) -> *volatile u32 = ptr_cast(usize(addr))
+// **`clk_peri` is the SDK's**, running at the system clock by the time any of this executes. Nothing
+// here configures it and nothing here should: clocks are the board's business and the SDK owns that.
+const PERI_HZ: u32 = 125_000_000
 
-// A pin's entry in the pad control block — drive strength, pull-ups, input enable. One word per pin,
-// four bytes apart, the first at `GPIO0_OFFSET`.
-pad(pin: u32) -> *volatile u32 = reg(pads.BASE + pads.GPIO0_OFFSET + pin * 4)
+// **31.25 MHz is the fast end of what these carrier boards are reliably wired for.** The ST7796 is
+// good for rather more and the panel's ribbon is not; a display that comes up speckled rather than
+// blank is this number being too high.
+const TFT_HZ: u32 = 31_250_000
 
-// A pin's function-select register. **Eight bytes apart rather than four**, because each pin has a
-// status word in front of its control word.
-ctrl(pin: u32) -> *volatile u32 = reg(io.BASE + io.GPIO0_CTRL_OFFSET + pin * 8)
-
-// ## Pins
-//
-// Hand a pin to the single-cycle IO block, which is what makes it a GPIO the processor drives rather
-// than a signal belonging to a peripheral. Function 5 on every pin of this chip.
-claim(pin: u32) = *ctrl(pin) = io.GPIO0_CTRL_FUNCSEL_SIO_0
-
-// An output: claimed, its pad driving rather than isolated, and its direction set.
-//
-// **`OD` is "output disable", so clearing it is what enables the driver** — the sense reads backwards
-// and is the datasheet's. `IE` is left alone: an output does not need its input buffer, and the SDK's
-// own startup has already put the pad in a known state.
-output(pin: u32) =
-    claim(pin)
-    *pad(pin) = *pad(pin) & ~pads.GPIO0_OD_MASK
-    *reg(sio.BASE + sio.GPIO_OE_SET_OFFSET) = 1u32 << pin
-
-// An input with the chip's own pull-up, which is what a button to ground needs.
-//
-// **This board's buttons are to ground**, which is the board rather than the datasheet talking: 52Pi
-// give the pin numbers and not the wiring, and what settled it was pressing them. Wired to 3V3 they
-// would want `PDE` here and `pressed` without its `!`, and would have announced themselves by
-// reporting a button held that nobody was touching.
-input_pullup(pin: u32) =
-    claim(pin)
-    *pad(pin) = (*pad(pin) | pads.GPIO0_IE_MASK | pads.GPIO0_PUE_MASK) & ~pads.GPIO0_PDE_MASK
-    *reg(sio.BASE + sio.GPIO_OE_CLR_OFFSET) = 1u32 << pin
-
-// **Set and clear are separate registers rather than a read-modify-write of one**, which is not a
-// convenience: two cores share this block, and a read-modify-write of `GPIO_OUT` from one of them
-// would drop a change the other made in between.
-high(pin: u32) = *reg(sio.BASE + sio.GPIO_OUT_SET_OFFSET) = 1u32 << pin
-low(pin: u32)  = *reg(sio.BASE + sio.GPIO_OUT_CLR_OFFSET) = 1u32 << pin
-
-write(pin: u32, on: bool) = if on then high(pin) else low(pin)
-
-read(pin: u32) -> bool = (*reg(sio.BASE + sio.GPIO_IN_OFFSET) >> pin) & 1u32 == 1
-
-// Held down, given the pull-up above.
-pressed(pin: u32) -> bool = !read(pin)
-
-// ## SPI0, for the panel
-//
-// **The RP2040's SPI is an Arm PL022**, so its registers are the PL022's and carry that block's `SSP`
-// names rather than anything Raspberry Pi invented. The datasheet's SPI chapter is mostly a pointer
-// at Arm's.
-//
-// **A peripheral comes out of the chip's reset before it is configured**, which is the step that has
-// no equivalent on a smaller microcontroller and the one most easily left out: every register below
-// reads and writes fine while the block is held in reset, and none of it does anything.
-//
-// The clock the divisors below are against is `clk_peri`, which the SDK's own startup has already
-// brought up at the system clock — 125 MHz. Nothing here configures it, and nothing here should:
-// clocks are the board's business and the SDK owns that.
-
-// **Every peripheral register has three more addresses above it — XOR, set and clear.** Writing a
-// mask to the set alias raises exactly those bits and touches nothing else, which is not a
-// convenience: a read-modify-write of a shared register races the other core, and `RESETS` is shared
-// by definition.
-const ATOMIC_SET: u32 = 0x2000
-const ATOMIC_CLR: u32 = 0x3000
-
-// The transmit FIFO and the status word, which the pushing loop below reads on every byte.
-private sspdr() -> *volatile u32 = reg(ssp.BASE + ssp.SSPDR_OFFSET)
-private sspsr() -> *volatile u32 = reg(ssp.BASE + ssp.SSPSR_OFFSET)
-
-// Bring SPI0 up at 31.25 MHz, eight bits a frame, mode 0.
-//
-// **The bit rate is `clk_peri / (CPSDVSR * (1 + SCR))`**, so 125 MHz over 2 × 2. The ST7796 is good
-// for rather more than this and the panel's ribbon is not — 31.25 MHz is the fast end of what these
-// carrier boards are reliably wired for, and a display that comes up speckled rather than blank is
-// this number being too high.
-//
-// **Mode 0 is `SPO = 0, SPH = 0`**: the clock idles low and the panel samples on the rising edge.
-// `DSS = 7` is eight bits, counted from zero, and `FRF = 0` is Motorola SPI rather than the two
-// other framings the PL022 can speak.
-spi_up()
-    // A full reset cycle rather than only the release, so that this is the same whether or not
-    // something earlier in the boot had the block.
-    *reg(resets.BASE + ATOMIC_SET + resets.RESET_OFFSET) = resets.RESET_SPI0_MASK
-    *reg(resets.BASE + ATOMIC_CLR + resets.RESET_OFFSET) = resets.RESET_SPI0_MASK
-
-    while *reg(resets.BASE + resets.RESET_DONE_OFFSET) & resets.RESET_DONE_SPI0_MASK == 0 do ()
-
-    // Configured while disabled, which the PL022 requires: `SSE` is set last and on its own.
-    *reg(ssp.BASE + ssp.SSPCR1_OFFSET) = 0
-    *reg(ssp.BASE + ssp.SSPCPSR_OFFSET) = 2
-    *reg(ssp.BASE + ssp.SSPCR0_OFFSET) = (1u32 << ssp.SSPCR0_SCR_SHIFT) | 7
-    *reg(ssp.BASE + ssp.SSPCR1_OFFSET) = ssp.SSPCR1_SSE_MASK
-
-    // The two pins the peripheral drives. Function 1 on both, which is what `FUNCSEL_SPI0_SCLK` and
-    // `FUNCSEL_SPI0_TX` say — the constants are named rather than numbered so that this line can be
-    // read against the pinout table instead of against the datasheet.
-    *ctrl(TFT_CLK) = io.GPIO2_CTRL_FUNCSEL_SPI0_SCLK
-    *ctrl(TFT_DIN) = io.GPIO3_CTRL_FUNCSEL_SPI0_TX
-    *pad(TFT_CLK) = *pad(TFT_CLK) & ~pads.GPIO0_OD_MASK
-    *pad(TFT_DIN) = *pad(TFT_DIN) & ~pads.GPIO0_OD_MASK
-end spi_up
-
-// Push bytes, discarding everything that comes back.
-//
-// **The reads are not optional even though nothing is listening.** Every frame clocked out clocks one
-// in, and a receive FIFO nobody empties overflows — after which the block reports an overrun and, on
-// this peripheral, keeps running while the status bits stop meaning what the loop below reads them
-// to mean. So the loop is balanced: it pushes while there is room and pops while there is anything
-// there, and finishes when as many frames have come back as went out.
-private spi_send(data: []u8)
-    var tx: usize = 0
-    var rx: usize = 0
-    var sink: u32 = 0
-
-    while rx < data.len
-        if tx < data.len && *sspsr() & ssp.SSPSR_TNF_MASK != 0
-            *sspdr() = u32(data[tx])
-            tx += 1
-
-        if *sspsr() & ssp.SSPSR_RNE_MASK != 0
-            sink = *sspdr()
-            rx += 1
-end spi_send
-
-// Wait until the last bit is off the wire.
-//
-// **This is what makes `DC` safe to move.** The FIFO being empty says the block has accepted every
-// byte, not that it has sent them, and lowering `DC` one byte early turns a parameter into a command
-// — which the panel obeys. `BSY` is the bit that answers the question actually being asked.
-private spi_drain() =
-    while *sspsr() & ssp.SSPSR_BSY_MASK != 0 do ()
+// The callbacks below cannot capture, so they ask for the block rather than being handed it. It is
+// two integers built from constants, so this costs nothing.
+private bus() -> spi.Block = spi.spi0()
 
 // ## The panel's three callbacks
 //
-// **These are `*extern` rather than closures, so they capture nothing** — which is why everything
-// above is addresses and constants rather than a struct somebody has to be handed. `sh.sysl.st7796`
-// takes plain function pointers on purpose: a `&Fn` is a trait object, and the compiler cannot know
-// whether one holds on to the slice it was given, so every parameter array in the driver would be
-// promoted to the heap to outlive its frame. On a board with 264 KB that is the wrong trade, and the
-// price is this — one display, reached through the module.
+// **These are `*extern` rather than closures, so they capture nothing.** `sh.sysl.st7796` takes plain
+// function pointers on purpose: a `&Fn` is a trait object, and the compiler cannot know whether one
+// holds on to the slice it was given, so every parameter array in the driver would be promoted to the
+// heap to outlive its frame. On a board with 264 KB that is the wrong trade, and the price is this —
+// one display, reached through the module.
+//
+// **`CS` and `DC` are ordinary GPIOs and not the SPI block's.** The PL022 has a chip-select of its
+// own and it is useless here: it drops between frames, and this panel needs one assertion held across
+// a command and every parameter that follows it.
 
 // A command byte with `DC` low, then its parameters with `DC` high, inside one assertion of `CS`.
 send_cmd(c: u8, params: *u8, n: usize)
-    low(TFT_CS)
+    gpio.low(TFT_CS)
 
-    low(TFT_DC)
+    gpio.low(TFT_DC)
     var one: [1]u8 = [0]
     one[0] = c
-    spi_send(one[..])
-    spi_drain()
+    spi.send(bus(), one[..])
+
+    // **`drain` before `DC` moves, every time.** An empty FIFO says the block has accepted the byte,
+    // not that it has sent it, and raising `DC` early makes the panel read a command as a parameter.
+    spi.drain(bus())
 
     if n > 0
-        high(TFT_DC)
-        spi_send(params[0..<n])
-        spi_drain()
+        gpio.high(TFT_DC)
+        spi.send(bus(), params[0..<n])
+        spi.drain(bus())
 
-    high(TFT_CS)
+    gpio.high(TFT_CS)
 end send_cmd
 
 // Pixels are always data, and always follow a window the driver has already set.
 send_pixels(data: *u8, n: usize)
     if n == 0 then return
 
-    low(TFT_CS)
-    high(TFT_DC)
-    spi_send(data[0..<n])
-    spi_drain()
-    high(TFT_CS)
+    gpio.low(TFT_CS)
+    gpio.high(TFT_DC)
+    spi.send(bus(), data[0..<n])
+    spi.drain(bus())
+    gpio.high(TFT_CS)
 end send_pixels
 
 delay_ms(ms: u32) = sleep(int(ms).ms)
 
+// Held down, given the pull-ups these buttons are configured with.
+//
+// **This board's buttons are to ground**, which is the board rather than the datasheet talking: 52Pi
+// give the pin numbers and not the wiring, and what settled it was pressing them. Wired to 3V3 they
+// would want `gpio.input_pulldown` and this without its `!`, and would have announced themselves by
+// reporting a button held that nobody was touching.
+//
+// It stays here rather than in `sh.sysl.rp2040blocks` because which way a button switches is a fact
+// about a board, and a GPIO package that knew about buttons would be the first crack in the split
+// this program exists to keep.
+pressed(pin: u32) -> bool = !gpio.read(pin)
+
 // Hold the panel in reset and let it go, which is the one part of bringing it up that the driver
 // cannot do — `SWRESET` is a command, and a command needs a controller already listening.
 panel_reset()
-    high(TFT_RST)
+    gpio.high(TFT_RST)
     delay_ms(10)
-    low(TFT_RST)
+    gpio.low(TFT_RST)
     delay_ms(20)
-    high(TFT_RST)
+    gpio.high(TFT_RST)
     delay_ms(120)
 end panel_reset
 
 // ## The program
-//
-// Alternate the two LEDs and report the buttons, so that a board with this on it is visibly running
-// and every part it touches has been proven separately: the LEDs prove the output path, the buttons
-// prove the input path and the pads, and the printing proves the USB serial port.
 
 @export("main")
 boot() -> int =
     // **The answer is not fatal here, unlike in most programs that use this package.** `init` brings
-    // up stdio and then the wireless chip, and this board's own parts are on neither: a plain Pico
-    // has no CYW43 for the second half to find, and everything below still works on one.
+    // up stdio and then the wireless chip, and this board's own parts are on neither.
     val wireless = init()
 
     wait_for_terminal()
@@ -261,20 +142,20 @@ boot() -> int =
     if !wireless
         print("no wireless chip — a plain Pico, or the CMake project linked no cyw43 support")
 
-    output(LED_D1)
-    output(LED_D2)
-    input_pullup(BTN_1)
-    input_pullup(BTN_2)
+    gpio.output(LED_D1)
+    gpio.output(LED_D2)
+    gpio.input_pullup(BTN_1)
+    gpio.input_pullup(BTN_2)
 
-    // **`CS`, `DC` and `RST` are ordinary GPIOs and not the SPI block's.** The PL022 has a chip-select
-    // of its own and it is useless here: it drops between frames, and this panel needs one assertion
-    // held across a command and all of its parameters.
-    output(TFT_CS)
-    output(TFT_DC)
-    output(TFT_RST)
-    high(TFT_CS)
+    gpio.output(TFT_CS)
+    gpio.output(TFT_DC)
+    gpio.output(TFT_RST)
+    gpio.high(TFT_CS)
 
-    spi_up()
+    gpio.select(TFT_CLK, gpio.SPI)
+    gpio.select(TFT_DIN, gpio.SPI)
+    spi.up(bus(), PERI_HZ, TFT_HZ)
+
     panel_reset()
 
     var display = panel(&send_cmd, &send_pixels, &delay_ms, Rotation.Landscape)
@@ -292,7 +173,7 @@ boot() -> int =
     var inverted = true
     invert(&display, inverted)
 
-    print(s"panel up — ${display.width} by ${display.height}")
+    print(s"panel up — ${display.width} by ${display.height} at ${spi.rate(PERI_HZ, 2, 1)} Hz")
     print("BTN1 toggles inversion — the bars should read red, green, blue on black")
 
     clear(&display, rgb565(0, 0, 0))
@@ -312,8 +193,8 @@ boot() -> int =
 
     loop
         on = !on
-        write(LED_D1, on)
-        write(LED_D2, !on)
+        gpio.write(LED_D1, on)
+        gpio.write(LED_D2, !on)
 
         val now_1 = pressed(BTN_1)
         val now_2 = pressed(BTN_2)

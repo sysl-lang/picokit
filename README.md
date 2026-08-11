@@ -8,11 +8,16 @@ map and its bring-up "is board glue and belongs in the program, not here … let
 would quietly become a package for one board" — and this is the program it means.
 
 ```
-sysl-lang/rp2040   the chip's registers, generated from Raspberry Pi's own SVD
-sysl-lang/pico     the board's host: USB stdio, the clock, the wireless chip, through the C SDK
-sysl-lang/st7796   the panel: arithmetic on bytes and two callbacks this program supplies
-sysl-lang/plutovg  the rasterizer, once the panel is up — see "What is not done yet"
+sysl-lang/rp2040blocks  the chip's GPIO and SPI, over a register map generated from Raspberry Pi's SVD
+sysl-lang/pico          the board's host: USB stdio, the clock, the wireless chip, through the C SDK
+sysl-lang/st7796        the panel: arithmetic on bytes and three callbacks this program supplies
+sysl-lang/plutovg       the rasterizer, once the panel is up — see "What is not done yet"
 ```
+
+**`sysl-lang/rp2040blocks` came out of this repository.** The SPI bring-up and the GPIO helpers were
+written here and ran here first, then moved — a PL022 reset cycle and a bit-rate divisor search are
+facts about the chip, and would have been copied into the next board's program unchanged. What is
+left here is pin numbers, which is the one thing that is genuinely about this carrier board.
 
 ## The board
 
@@ -100,26 +105,30 @@ under the kit is a fact about somebody's desk.
 
 ## The panel
 
-**The RP2040's SPI is an Arm PL022**, so the registers carry that block's `SSP` names and the
-datasheet's SPI chapter is mostly a pointer at Arm's. Bring-up is a full reset cycle through the
-`RESETS` atomic aliases, then `CPSDVSR` and `SCR` for **31.25 MHz** off `clk_peri`'s 125, eight bits
-a frame, mode 0, with `SSE` set last and on its own because the PL022 wants configuring while
-disabled.
+**Run on the board, 2026-08-10, and it took two goes.** The first was right in every respect except
+polarity — bars across the top in the correct order, square below them, correct rotation, correct
+channel order, and every colour its own complement: red reading cyan, green magenta, blue yellow, and
+a black background coming up white.
 
-**`CS`, `DC` and `RST` are ordinary GPIOs rather than the peripheral's.** The PL022 has a
-chip-select and it is useless here: it drops between frames, and this panel needs one assertion held
-across a command and every parameter that follows it.
+**This glass wants display inversion on.** The ST7796's init sequence sends neither `INVON` nor
+`INVOFF`, so the controller is left at its post-reset default, and this panel is wired the other way
+up — common on the IPS glass these carrier boards use. One command fixes it, and **BTN1 toggles it**,
+which is how the claim was settled: the two builds print identically and differ only on the glass, so
+a rebuild could not tell them apart and a button press could.
 
-Two things in the pushing loop are load bearing and neither is obvious from the code:
+That also answers what 52Pi's *"may vary with production lot"* left open. The full init sequence —
+the `CSCON`-gated extension registers and both gamma curves included — produced a coherent picture,
+so **this is an ST7796** and not the ILI9488 that shares its pinout.
 
-- **It reads back every byte it writes.** A frame clocked out clocks one in, and a receive FIFO
-  nobody empties overflows — after which the block keeps running while its status bits stop meaning
-  what the loop reads them to mean.
-- **It waits on `BSY`, not on the FIFO being empty, before moving `DC`.** An empty FIFO says the
-  block has *accepted* the bytes, not that it has *sent* them. Lowering `DC` one byte early turns a
-  parameter into a command, and the panel obeys it.
+**`CS`, `DC` and `RST` are ordinary GPIOs rather than the SPI block's**, which is the one wiring
+decision this program makes rather than inherits. The PL022 has a chip-select of its own and it is
+useless here: it drops between frames, and this panel needs one assertion held across a command and
+every parameter that follows it.
 
-The demo clears to black and paints three bars and a white square — chosen so that a wrong colour
+Everything else about the bus — the reset cycle, the divisors, the balanced push loop, and why
+`drain` waits on `BSY` rather than on an empty FIFO — is `sh.sysl.rp2040blocks` and documented there.
+
+The demo clears to black and paints three bars and a white square, chosen so that a wrong colour
 order, a wrong rotation and a wrong window look like different mistakes rather than like each other.
 
 ## What is not done yet

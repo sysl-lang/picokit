@@ -10,20 +10,25 @@ package {
   version = "0.1.0"
 }
 
-// **`rp2040` is the chip and `pico` is the board's host.** They are not alternatives: the first is
-// generated register constants and no code at all, the second is the pico-sdk's surface reached
-// through `extern`. Everything this board hangs off its GPIOs — the two LEDs, the two buttons, the
-// buzzer, the RGB LED, the joystick on ADC0/ADC1, and the panel's SPI — is registers, which is
-// `rp2040`. Standard output over USB, the clock, and the wireless chip are the SDK's, which is
-// `pico`.
+// **`rp2040blocks` is the chip and `pico` is the board's host.** They are not alternatives: the first
+// drives the RP2040's own peripherals and needs no C at all, the second is the pico-sdk's surface
+// reached through `extern`. Everything this board hangs off its GPIOs — the two LEDs, the two
+// buttons, the buzzer, the RGB LED, the joystick on ADC0/ADC1, and the panel's SPI — is the chip's,
+// which is `rp2040blocks`. Standard output over USB, the clock, and the wireless chip are the SDK's,
+// which is `pico`.
+//
+// **`rp2040` itself is a transitive dependency now and not a direct one.** It was direct until the
+// SPI and GPIO code written here moved out into `rp2040blocks`, which is the whole point of that
+// package existing: what is left in this program is the pin *numbers*, and a pin number is the one
+// thing that is genuinely about this carrier board.
 //
 // `st7796` is the panel. It is not tied to this board or to any chip: it is arithmetic on bytes and
-// calls to two `*extern` callbacks that this program supplies, which is precisely the split that
+// calls to three `*extern` callbacks that this program supplies, which is precisely the split that
 // keeps it a driver rather than a board file.
 dependencies {
-  rp2040 { git = "github.com/sysl-lang/rp2040", version = "0.1.0" }
-  pico   { git = "github.com/sysl-lang/pico",   version = "0.1.0" }
-  st7796 { git = "github.com/sysl-lang/st7796", version = "0.1.0" }
+  rp2040blocks { git = "github.com/sysl-lang/rp2040blocks", version = "0.1.0" }
+  pico         { git = "github.com/sysl-lang/pico",         version = "0.1.0" }
+  st7796       { git = "github.com/sysl-lang/st7796",       version = "0.1.0" }
 }
 
 // **`alloc = true` because the SDK links newlib's allocator whether or not this program touches
