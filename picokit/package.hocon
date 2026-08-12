@@ -31,7 +31,7 @@ dependencies {
   st7796       { git = "github.com/sysl-lang/st7796",       version = "0.1.0" }
 }
 
-// **`alloc = true` because the SDK links newlib's allocator whether or not this program touches
+// **`heap = true` because the SDK links newlib's allocator whether or not this program touches
 // one**, which is the reason `sh.sysl.pico` gives for the same line. Nothing here allocates yet.
 //
 // `sh.sysl.plutovg` is not a dependency yet and it will be: it is the rasterizer that turns this
@@ -41,5 +41,5 @@ dependencies {
 // `write_png` and the font loader, and a program depending on plutovg gets past analysis for
 // `thumbv6m-freestanding`, which is where a capability refusal would land.
 requires {
-  alloc = true
+  heap = true
 }
