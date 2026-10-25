@@ -8,6 +8,7 @@
 package {
   name    = "picokit"
   version = "0.1.0"
+  sysl    = "0.6.0"
 }
 
 // **`rp2040blocks` is the chip and `pico` is the board's host.** They are not alternatives: the first
@@ -27,8 +28,8 @@ package {
 // keeps it a driver rather than a board file.
 dependencies {
   rp2040blocks { git = "github.com/sysl-lang/rp2040blocks", version = "0.1.0" }
-  pico         { git = "github.com/sysl-lang/pico",         version = "0.1.0" }
-  st7796       { git = "github.com/sysl-lang/st7796",       version = "0.1.0" }
+  pico         { git = "github.com/sysl-lang/pico",         version = "0.1.1" }
+  st7796       { git = "github.com/sysl-lang/st7796",       version = "0.1.1" }
 }
 
 // **`heap = true` because the SDK links newlib's allocator whether or not this program touches

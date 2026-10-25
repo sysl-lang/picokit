@@ -54,7 +54,7 @@ add_custom_command(
             "$<$<BOOL:${SYSL_C_DEFINES}>:-D;$<JOIN:${SYSL_C_DEFINES},;-D;>>"
             -o ${SYSL_ARCHIVE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/picokit/main.sysl
-            ${CMAKE_CURRENT_SOURCE_DIR}/picokit/package.hocon
+            ${CMAKE_CURRENT_SOURCE_DIR}/picokit/sysl.hocon
     COMMENT "Compiling the Pico Breadboard Kit for ${SYSL_TARGET}"
     # **`COMMAND_EXPAND_LISTS`, without which the two generator expressions above are useless.** A
     # quoted argument that expands to a `;`-separated list stays *one* argument unless this is given,

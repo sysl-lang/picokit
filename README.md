@@ -57,7 +57,7 @@ cmake --build build
 `build/picokit.uf2` is what goes on the board. Hold BOOTSEL, plug it in, copy the file across.
 
 Everything else resolves on its own: all four dependencies are coordinates in
-`picokit/package.hocon`, so this builds from a fresh clone.
+`picokit/sysl.hocon`, so this builds from a fresh clone.
 
 **It is `thumbv6m-freestanding`.** The RP2040's Cortex-M0+ is Armv6-M, which is neither of the
 targets a Pico 2 uses, and getting it wrong is not a link error — an Armv8-M image on an M0+ faults
