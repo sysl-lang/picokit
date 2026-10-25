@@ -27,7 +27,7 @@ package {
 // calls to three `*extern` callbacks that this program supplies, which is precisely the split that
 // keeps it a driver rather than a board file.
 dependencies {
-  rp2040blocks { git = "github.com/sysl-lang/rp2040blocks", version = "0.1.0" }
+  rp2040blocks { git = "github.com/sysl-lang/rp2040blocks", version = "0.1.1" }
   pico         { git = "github.com/sysl-lang/pico",         version = "0.1.1" }
   st7796       { git = "github.com/sysl-lang/st7796",       version = "0.1.1" }
 }
