@@ -1,4 +1,5 @@
 github.com/sysl-lang/pico v0.1.1 sha256:3261ffd605c42d4178b299d6179fe786f5bbf18da6c9d0cc99562a4096e83a0c
+github.com/sysl-lang/pico v0.1.2 sha256:a7abfa1e6dea57dec86b4a0acc3160d5334823c087b48c6cce3118729e26b8bc
 github.com/sysl-lang/rp2040 v0.1.1 sha256:5bbd65f925a8f2b4006d93633e0c9aed2f706fa01bf08cc006219ba7c68e48a9
 github.com/sysl-lang/rp2040blocks v0.1.1 sha256:ca9029b5e3e42c3395365351fdb26d82894ae21feb6bded39b1206cf0c42a2b0
 github.com/sysl-lang/st7796 v0.1.1 sha256:c855a1a9038dc19df3d7cc2a7f73d7238ae1b0b390cfea4912454baff1989520
